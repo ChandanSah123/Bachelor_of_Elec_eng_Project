@@ -1,0 +1,1122 @@
+Script without Speed
+
+import psse3603
+import psspy
+import dyntools
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.io
+import numpy as np
+import os
+import re
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+# --- DEFINE FILE PATHS FOR IEEE 9-BUS ---
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+dyr_file = os.path.join(work_dir, "ieee9bus.dyr")
+out_file = os.path.join(work_dir, "IEEE9.out")
+excel_file = os.path.join(work_dir, "IEEE9_Results.xlsx")
+mat_file = os.path.join(work_dir, "IEEE9_Results.mat")
+
+# Initialize PSS/E
+# Note: 50 is the bus bin size. Ensure this is sufficient for your license/case.
+_i = psspy.getdefaultint()
+_f = psspy.getdefaultreal()
+psspy.psseinit(50)
+
+# ==============================================================================
+# 2. SIMULATION
+# ==============================================================================
+print("--- Starting Simulation for IEEE 9-Bus ---")
+
+# Simulation Parameters
+fault_bus = 7
+fault_time = 1.0
+clear_time = 1.187
+end_time = 4.0
+
+# Load Case
+psspy.read(0, raw_file)
+psspy.dyre_new([1,1,1,1], dyr_file, "", "", "")
+
+# Solver Settings
+psspy.dynamics_solution_param_2([_i]*8, [_f, _f, 0.001, _f, _f, _f, _f, _f])
+psspy.fnsl([0,0,0,1,1,0,99,0])
+
+# --- DEFINE CHANNELS ---
+# 1. Angles (Channels 1, 2, 3)
+psspy.chsb(0,1,[-1,-1,-1,1,1,0])
+psspy.chsb(0,1,[-1,-1,-1,1,2,0])
+psspy.chsb(0,1,[-1,-1,-1,1,3,0])
+
+# 2. Speeds (Channels 4, 5, 6)
+psspy.chsb(0,1,[-1,-1,-1,2,1,0])
+psspy.chsb(0,1,[-1,-1,-1,2,2,0])
+psspy.chsb(0,1,[-1,-1,-1,2,3,0])
+
+# 3. Electrical Power (Channels 7, 8, 9)
+psspy.chsb(0,1,[-1,-1,-1,7,1,0])
+psspy.chsb(0,1,[-1,-1,-1,7,2,0])
+psspy.chsb(0,1,[-1,-1,-1,7,3,0])
+
+# --- CONVERT NETWORK (The Fix) ---
+print("Converting Network...")
+psspy.cong(0) # Generator conversion (ZSORCE)
+
+# Load Conversion (CONL) requires 3 API calls:
+# 1. Set parameters for Active Power (APIOPT = 1)
+psspy.conl(0, 1, 1, [0, 0], [0.0, 100.0, 0.0, 100.0])
+# 2. Set parameters for Reactive Power (APIOPT = 2)
+psspy.conl(0, 1, 2, [0, 0], [0.0, 100.0, 0.0, 100.0])
+# 3. Commit/Process the conversion (APIOPT = 3)
+psspy.conl(0, 1, 3, [0, 0], [0.0, 100.0, 0.0, 100.0])
+
+# Run Simulation
+print("Initializing State (STRT)...")
+ierr_strt = psspy.strt(0, out_file)
+
+if ierr_strt > 0:
+    print(f"ERROR: Simulation failed to start. Error code: {ierr_strt}")
+else:
+    psspy.run(0, fault_time, 0, 1, 0)
+
+    print(f"Applying Fault at Bus {fault_bus}...")
+    psspy.dist_bus_fault(fault_bus, 1, 0.0, [0.0, -0.2E+10])
+
+    psspy.run(0, clear_time, 0, 1, 0)
+
+    print("Clearing Fault...")
+    psspy.dist_clear_fault(1)
+
+    psspy.run(0, end_time, 0, 1, 0)
+    print("Simulation Complete.")
+
+# ==============================================================================
+# 3. DATA EXTRACTION & 4. PLOTTING
+# ==============================================================================
+
+# Check if output file was actually created before trying to read it
+if not os.path.exists(out_file):
+    print(f"CRITICAL ERROR: Output file not found at {out_file}")
+    print("The simulation likely failed during initialization.")
+else:
+    chnf_obj = dyntools.CHNF(out_file)
+    short_title, chanid, chandata = chnf_obj.get_data()
+    time_data = chandata['time']
+
+    print("Generating Plots...")
+
+    # Plot 1: Rotor Angles
+    plt.figure(figsize=(10, 6))
+    for ch in range(1, 4):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=clean_label)
+    plt.title("Rotor Angles (Gen 1, 2, 3)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Angle (Deg)")
+    plt.grid(True)
+    plt.legend(bbox_to_anchor=(1.01, 1), loc='upper left')
+    plt.tight_layout()
+    plt.show(block=False)
+
+    # Plot 2: Speed
+    plt.figure(figsize=(10, 6))
+    for ch in range(4, 7):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=clean_label)
+    plt.title("Generator Speed (Gen 1, 2, 3)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Speed (pu)")
+    plt.grid(True)
+    plt.legend(bbox_to_anchor=(1.01, 1), loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+    # ==============================================================================
+    # 5. EXPORT
+    # ==============================================================================
+    print("Preparing Export...")
+    t_data = chandata['time']
+    sorted_keys = sorted([k for k in chanid.keys() if isinstance(k, int)])
+    excel_dfs = []
+    mat_export = {}
+
+    print("Processing channels...")
+    for key in sorted_keys:
+        if key in chandata:
+            y_data = chandata[key]
+            
+            # A. Prepare for EXCEL
+            raw_name = str(chanid[key]).strip()
+            mini_df = pd.DataFrame({'Time': t_data, raw_name: y_data})
+            excel_dfs.append(mini_df)
+            
+            # B. Prepare for MATLAB
+            clean_name = re.sub(r'[^a-zA-Z0-9]', '_', raw_name)
+            clean_name = re.sub(r'_+', '_', clean_name).strip('_')
+            if clean_name and clean_name[0].isdigit():
+                 clean_name = "Ch_" + clean_name
+            # Ensure equal lengths
+            min_len = min(len(t_data), len(y_data))
+            matrix_nx2 = np.column_stack((t_data[:min_len], y_data[:min_len]))
+            mat_export[clean_name] = matrix_nx2
+
+    # --- Save Excel ---
+    if excel_dfs:
+        try:
+            final_df = pd.concat(excel_dfs, axis=1)
+            final_df.to_excel(excel_file, index=False)
+            print(f"SUCCESS: Excel saved to {excel_file}")
+        except PermissionError:
+            print("ERROR: Excel file is OPEN. Please close it.")
+        except Exception as e:
+            print(f"Error saving Excel: {e}")
+
+    # --- Save MATLAB ---
+    try:
+        if mat_export:
+            scipy.io.savemat(mat_file, mat_export)
+            print(f"SUCCESS: MAT file saved to {mat_file}")
+        else:
+            print("Warning: No data found to export to MATLAB.")
+    except Exception as e:
+        print(f"Error saving MAT file: {e}")
+
+print("--- Script Finished ---")
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Correct script for plotting
+
+import psse3603
+import psspy
+import dyntools
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.io
+import numpy as np
+import os
+import re
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+dyr_file = os.path.join(work_dir, "ieee9bus.dyr")
+out_file = os.path.join(work_dir, "IEEE9.out")
+excel_file = os.path.join(work_dir, "IEEE9_Results.xlsx")
+mat_file = os.path.join(work_dir, "IEEE9_Results.mat")
+
+# Initialize PSS/E
+_i = psspy.getdefaultint()
+_f = psspy.getdefaultreal()
+psspy.psseinit(50)
+
+# ==============================================================================
+# 2. SIMULATION
+# ==============================================================================
+print("--- Starting Simulation for IEEE 9-Bus ---")
+
+# Simulation Parameters
+fault_bus = 7
+fault_time = 1.0
+clear_time = 1.187
+end_time = 4.0
+
+# Load Case
+psspy.read(0, raw_file)
+psspy.dyre_new([1,1,1,1], dyr_file, "", "", "")
+
+# Solver Settings
+psspy.dynamics_solution_param_2([_i]*8, [_f, _f, 0.001, _f, _f, _f, _f, _f])
+psspy.fnsl([0,0,0,1,1,0,99,0])
+
+# --- DEFINE CHANNELS (UPDATED) ---
+# NOTE: Assumes Generators are at Bus 1, 2, and 3 with ID '1'
+
+#Channels
+
+psspy.chsb(0,1,[-1,-1,-1,1,1,0])
+psspy.chsb(0,1,[-1,-1,-1,1,6,0])
+psspy.chsb(0,1,[-1,-1,-1,1,2,0])
+psspy.chsb(0,1,[-1,-1,-1,1,7,0])
+
+# --- CONVERT NETWORK ---
+print("Converting Network...")
+psspy.cong(0) 
+
+# Load Conversion (3 Steps)
+psspy.conl(0, 1, 1, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 2, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 3, [0, 0], [0.0, 100.0, 0.0, 100.0])
+
+# Run Simulation
+print("Initializing State (STRT)...")
+ierr_strt = psspy.strt(0, out_file)
+
+if ierr_strt > 0:
+    print(f"ERROR: Simulation failed to start. Error code: {ierr_strt}")
+else:
+    psspy.run(0, fault_time, 0, 1, 0)
+
+    print(f"Applying Fault at Bus {fault_bus}...")
+    psspy.dist_bus_fault(fault_bus, 1, 0.0, [0.0, -0.2E+10])
+
+    psspy.run(0, clear_time, 0, 1, 0)
+
+    print("Clearing Fault...")
+    psspy.dist_clear_fault(1)
+
+    psspy.run(0, end_time, 0, 1, 0)
+    print("Simulation Complete.")
+
+# ==============================================================================
+# 3. DATA EXTRACTION & 4. PLOTTING
+# ==============================================================================
+
+if not os.path.exists(out_file):
+    print(f"CRITICAL ERROR: Output file not found at {out_file}")
+else:
+    chnf_obj = dyntools.CHNF(out_file)
+    short_title, chanid, chandata = chnf_obj.get_data()
+    time_data = chandata['time']
+
+    print("Generating Plots...")
+
+    # Plot 1: Rotor Angles (Channels 1, 2, 3)
+    plt.figure(figsize=(10, 6))
+    for ch in range(1, 4):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Rotor Angles")
+    plt.ylabel("Angle (Deg)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 2: Mechanical Power (Channels 4, 5, 6)
+    plt.figure(figsize=(10, 6))
+    for ch in range(4, 7):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Mechanical Power (Pmech)")
+    plt.ylabel("Power (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 3: Electrical Power (Channels 7, 8, 9)
+    plt.figure(figsize=(10, 6))
+    for ch in range(7, 10):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Electrical Power (Pelec)")
+    plt.ylabel("Power (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 4: Generator Speed (Channels 10, 11, 12)
+    plt.figure(figsize=(10, 6))
+    for ch in range(10, 13):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Generator Speed")
+    plt.ylabel("Speed (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show() # Block here to keep windows open
+
+    # ==============================================================================
+    # 5. EXPORT
+    # ==============================================================================
+    print("Preparing Export...")
+    t_data = chandata['time']
+    sorted_keys = sorted([k for k in chanid.keys() if isinstance(k, int)])
+    excel_dfs = []
+    mat_export = {}
+
+    for key in sorted_keys:
+        if key in chandata:
+            y_data = chandata[key]
+            raw_name = str(chanid[key]).strip()
+            
+            # Excel
+            mini_df = pd.DataFrame({'Time': t_data, raw_name: y_data})
+            excel_dfs.append(mini_df)
+            
+            # MATLAB
+            clean_name = re.sub(r'[^a-zA-Z0-9]', '_', raw_name)
+            clean_name = re.sub(r'_+', '_', clean_name).strip('_')
+            if clean_name and clean_name[0].isdigit():
+                 clean_name = "Ch_" + clean_name
+            min_len = min(len(t_data), len(y_data))
+            matrix_nx2 = np.column_stack((t_data[:min_len], y_data[:min_len]))
+            mat_export[clean_name] = matrix_nx2
+
+    if excel_dfs:
+        try:
+            final_df = pd.concat(excel_dfs, axis=1)
+            final_df.to_excel(excel_file, index=False)
+            print(f"Excel saved to {excel_file}")
+        except:
+            print("Could not save Excel (Check if file is open).")
+
+    try:
+        if mat_export:
+            scipy.io.savemat(mat_file, mat_export)
+            print(f"MAT file saved to {mat_file}")
+    except Exception as e:
+        print(f"Error saving MAT: {e}")
+
+print("--- Script Finished ---")
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Plotting Script
+
+import psse3603
+import psspy
+import dyntools
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.io
+import numpy as np
+import os
+import re
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+dyr_file = os.path.join(work_dir, "ieee9bus.dyr")
+out_file = os.path.join(work_dir, "IEEE9.out")
+excel_file = os.path.join(work_dir, "IEEE9_Results.xlsx")
+mat_file = os.path.join(work_dir, "IEEE9_Results.mat")
+
+# Initialize PSS/E
+_i = psspy.getdefaultint()
+_f = psspy.getdefaultreal()
+psspy.psseinit(50)
+
+# ==============================================================================
+# 2. SIMULATION
+# ==============================================================================
+print("--- Starting Simulation for IEEE 9-Bus ---")
+
+# Simulation Parameters
+fault_bus = 7
+from_bus=7
+to_bus=5
+line_id='1'
+fault_time = 1.0
+clear_time = 1.1
+end_time = 4.0
+
+# Load Case
+psspy.read(0, raw_file)
+psspy.dyre_new([1,1,1,1], dyr_file, "", "", "")
+
+# Solver Settings
+psspy.dynamics_solution_param_2([_i]*8, [_f, _f, 0.001, _f, _f, _f, _f, _f])
+psspy.fnsl([0,0,0,1,1,0,99,0])
+
+# --- DEFINE CHANNELS (UPDATED) ---
+# NOTE: Assumes Generators are at Bus 1, 2, and 3 with ID '1'
+
+#Channels
+
+psspy.chsb(0,1,[-1,-1,-1,1,1,0])
+psspy.chsb(0,1,[-1,-1,-1,1,6,0])
+psspy.chsb(0,1,[-1,-1,-1,1,2,0])
+psspy.chsb(0,1,[-1,-1,-1,1,7,0])
+
+# --- CONVERT NETWORK ---
+print("Converting Network...")
+psspy.cong(0) 
+
+# Load Conversion (3 Steps)
+psspy.conl(0, 1, 1, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 2, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 3, [0, 0], [0.0, 100.0, 0.0, 100.0])
+
+# Run Simulation
+print("Initializing State (STRT)...")
+ierr_strt = psspy.strt(0, out_file)
+
+if ierr_strt > 0:
+    print(f"ERROR: Simulation failed to start. Error code: {ierr_strt}")
+else:
+    psspy.run(0, fault_time, 0, 1, 0)
+
+    print(f"Applying Fault at Bus {fault_bus}...")
+    psspy.dist_bus_fault(fault_bus, 1, 0.0, [0.0, -0.2E+10])
+
+    psspy.run(0, clear_time, 0, 1, 0)
+    print("Clearing Fault by TRIPPING LINE 7-5...")
+    psspy.dist_branch_trip(from_bus, to_bus, line_id)   # Use correct line ID
+
+    print("Clearing Fault...")
+    psspy.dist_clear_fault(1)
+
+    psspy.run(0, end_time, 0, 1, 0)
+    print("Simulation Complete.")
+
+# ==============================================================================
+# 3. PLOTTING
+# ==============================================================================
+
+if not os.path.exists(out_file):
+    print(f"CRITICAL ERROR: Output file not found at {out_file}")
+else:
+    chnf_obj = dyntools.CHNF(out_file)
+    short_title, chanid, chandata = chnf_obj.get_data()
+    time_data = chandata['time']
+
+    print("Generating Plots...")
+
+    # Plot 1: Rotor Angles (Channels 1, 2, 3)
+    plt.figure(figsize=(10, 6))
+    for ch in range(1, 4):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Rotor Angles")
+    plt.ylabel("Angle (Deg)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 2: Mechanical Power (Channels 4, 5, 6)
+    plt.figure(figsize=(10, 6))
+    for ch in range(4, 7):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Mechanical Power (Pmech)")
+    plt.ylabel("Power (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 3: Electrical Power (Channels 7, 8, 9)
+    plt.figure(figsize=(10, 6))
+    for ch in range(7, 10):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Electrical Power (Pelec)")
+    plt.ylabel("Power (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show(block=False)
+
+    # Plot 4: Generator Speed (Channels 10, 11, 12)
+    plt.figure(figsize=(10, 6))
+    for ch in range(10, 13):
+        if ch in chandata:
+            clean_label = str(chanid[ch]).strip()
+            plt.plot(time_data, chandata[ch], label=f"Ch{ch}: {clean_label}")
+    plt.title("Generator Speed")
+    plt.ylabel("Speed (pu)")
+    plt.grid(True)
+    plt.legend()
+    plt.show() # Block here to keep windows open
+
+print("--- Script Finished ---")
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Data Extraction Script
+
+import psse3603
+import psspy
+import dyntools
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.io
+import numpy as np
+import os
+import re
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+dyr_file = os.path.join(work_dir, "ieee9bus.dyr")
+out_file = os.path.join(work_dir, "IEEE9.out")
+excel_file = os.path.join(work_dir, "IEEE9_Results.xlsx")
+mat_file = os.path.join(work_dir, "IEEE9_Results.mat")
+
+# Initialize PSS/E
+_i = psspy.getdefaultint()
+_f = psspy.getdefaultreal()
+psspy.psseinit(50)
+
+# ==============================================================================
+# 2. SIMULATION
+# ==============================================================================
+print("--- Starting Simulation for IEEE 9-Bus ---")
+
+# Simulation Parameters
+fault_bus = 7
+from_bus=7
+to_bus=5
+line_id='1'
+fault_time = 0
+clear_time = 1
+end_time = 4
+
+# Load Case
+psspy.read(0, raw_file)
+psspy.dyre_new([1,1,1,1], dyr_file, "", "", "")
+
+# Solver Settings
+psspy.dynamics_solution_param_2([_i]*8, [_f, _f, 0.001, _f, _f, _f, _f, _f])
+psspy.fnsl([0,0,0,1,1,0,99,0])
+
+# --- DEFINE CHANNELS (UPDATED) ---
+# NOTE: Assumes Generators are at Bus 1, 2, and 3 with ID '1'
+
+#Channels
+
+psspy.chsb(0,1,[-1,-1,-1,1,1,0])
+psspy.chsb(0,1,[-1,-1,-1,1,6,0])
+psspy.chsb(0,1,[-1,-1,-1,1,2,0])
+psspy.chsb(0,1,[-1,-1,-1,1,7,0])
+
+# --- CONVERT NETWORK ---
+print("Converting Network...")
+psspy.cong(0) 
+
+# Load Conversion (3 Steps)
+psspy.conl(0, 1, 1, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 2, [0, 0], [0.0, 100.0, 0.0, 100.0])
+psspy.conl(0, 1, 3, [0, 0], [0.0, 100.0, 0.0, 100.0])
+
+# Run Simulation
+print("Initializing State (STRT)...")
+ierr_strt = psspy.strt(0, out_file)
+
+if ierr_strt > 0:
+    print(f"ERROR: Simulation failed to start. Error code: {ierr_strt}")
+else:
+    psspy.run(0, fault_time, 0, 1, 0)
+
+    print(f"Applying Fault at Bus {fault_bus}...")
+    psspy.dist_bus_fault(fault_bus, 1, 0.0, [0.0, -0.2E+10])
+
+    psspy.run(0, clear_time, 0, 1, 0)
+    print("Clearing Fault by TRIPPING LINE 7-5...")
+    psspy.dist_branch_trip(from_bus, to_bus, line_id)   # Use correct line ID
+
+    print("Clearing Fault...")
+    psspy.dist_clear_fault(1)
+
+    psspy.run(0, end_time, 0, 1, 0)
+    print("Simulation Complete.")
+
+# ==============================================================================
+# 3. DATA EXTRACTION
+# ==============================================================================
+
+if not os.path.exists(out_file):
+    print(f"CRITICAL ERROR: Output file not found at {out_file}")
+else:
+    chnf_obj = dyntools.CHNF(out_file)
+    short_title, chanid, chandata = chnf_obj.get_data()
+    time_data = chandata['time']
+
+# ==============================================================================
+# 5. EXPORT
+# ==============================================================================
+print("Preparing Export...")
+t_data = chandata['time']
+sorted_keys = sorted([k for k in chanid.keys() if isinstance(k, int)])
+
+# Prepare a single DataFrame for Excel export
+final_df = pd.DataFrame({'Time': t_data})  # Start with a single Time column
+
+for key in sorted_keys:
+    if key in chandata:
+        y_data = chandata[key]
+        raw_name = str(chanid[key]).strip()
+        final_df[raw_name] = y_data  # Add only the data column
+
+# Save the DataFrame to Excel
+try:
+    final_df.to_excel(excel_file, index=False)
+    print(f"Excel saved to {excel_file}")
+except:
+    print("Could not save Excel (Check if file is open).")
+
+# MATLAB Export
+mat_export = {}
+data1_export = []  # To store data for data1.mat
+
+for key in sorted_keys:
+    if key in chandata:
+        y_data = chandata[key]
+        raw_name = str(chanid[key]).strip()
+
+        # MATLAB
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', raw_name)
+        clean_name = re.sub(r'_+', '_', clean_name).strip('_')
+        if clean_name and clean_name[0].isdigit():
+             clean_name = "Ch_" + clean_name
+        min_len = min(len(t_data), len(y_data))
+        matrix_nx2 = np.column_stack((t_data[:min_len], y_data[:min_len]))
+        mat_export[clean_name] = matrix_nx2
+
+        # Collect data for data1.mat (exclude time column)
+        data1_export.append(y_data[:min_len])
+
+# Save ieee9_result.mat
+try:
+    if mat_export:
+        scipy.io.savemat(mat_file, mat_export)
+        print(f"MAT file saved to {mat_file}")
+except Exception as e:
+    print(f"Error saving MAT: {e}")
+
+# Save data1.mat
+try:
+    if data1_export:
+        data1_matrix = np.column_stack(data1_export)  # Combine all data columns
+        data1_file = os.path.join(work_dir, "data1.mat")
+        scipy.io.savemat(data1_file, {"data": data1_matrix})
+        print(f"data1.mat file saved to {data1_file}")
+except Exception as e:
+    print(f"Error saving data1.mat: {e}")
+
+print("--- Script Finished ---")
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+LOAD FLOW DATA
+import psse3603
+import psspy
+import os
+import pandas as pd
+import math  # Added for conversion
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+load_flow_file = os.path.join(work_dir, "LoadFlowResults.xlsx")
+
+# Initialize PSS/E
+psspy.psseinit(50)
+
+# ==============================================================================
+# 2. LOAD CASE & SOLVE
+# ==============================================================================
+print("Loading Case...")
+psspy.read(0, raw_file)
+
+print("Solving Load Flow...")
+ierr_fnsl = psspy.fnsl([0, 0, 0, 1, 1, 0, 99, 0])
+
+if ierr_fnsl > 1:
+    print(f"Warning: Load flow solution code: {ierr_fnsl}")
+else:
+    print(" > Load Flow Solved Successfully.")
+
+# ==============================================================================
+# 3. EXTRACT BUS DATA (AND CONVERT RAD -> DEG)
+# ==============================================================================
+print("Extracting Bus Data...")
+# Arguments: SID(-1), Flag(2), StringList
+ierr_num, bus_nums = psspy.abusint(-1, 2, ['NUMBER'])
+ierr_real, bus_data = psspy.abusreal(-1, 2, ['PU', 'ANGLE'])
+
+bus_results = []
+if ierr_num == 0:
+    for num, pu, ang_rad in zip(bus_nums[0], bus_data[0], bus_data[1]):
+        # --- FIX: CONVERT RADIANS TO DEGREES ---
+        ang_deg = ang_rad * (180.0 / math.pi)
+        bus_results.append([num, pu, ang_deg])
+    print(f" > Extracted {len(bus_results)} buses.")
+else:
+    print(f"ERROR: Bus extraction failed (Code {ierr_num})")
+
+# ==============================================================================
+# 4. EXTRACT BRANCH DATA (FIXED ARGUMENTS)
+# ==============================================================================
+print("Extracting Branch Data...")
+line_results = []
+
+# Arguments for PSS/E 36 abrn___: 
+# SID(-1), Owner(0), Ties(0), Type(3), Entry(2), StringList
+# Type 3 = Select BOTH Lines and Transformers
+try:
+    l_int_err, l_ints = psspy.abrnint(-1, 0, 0, 3, 2, ['FROMNUMBER', 'TONUMBER'])
+    l_chr_err, l_chrs = psspy.abrnchar(-1, 0, 0, 3, 2, ['ID'])
+    l_real_err, l_flw = psspy.abrnreal(-1, 0, 0, 3, 2, ['P', 'Q'])
+
+    if l_int_err == 0 and l_chr_err == 0 and l_real_err == 0:
+        for frm, to, ckt, p, q in zip(l_ints[0], l_ints[1], l_chrs[0], l_flw[0], l_flw[1]):
+            line_results.append([frm, to, ckt, p, q])
+        print(f" > Extracted {len(line_results)} branches.")
+    else:
+        print(f"ERROR: Branch extraction failed. Codes: {l_int_err}")
+
+except TypeError:
+    print("CRITICAL ERROR: PSS/E version mismatch on arguments. Trying fallback (4 ints)...")
+    # Fallback for older PSS/E versions just in case
+    try:
+        l_int_err, l_ints = psspy.abrnint(-1, 0, 0, 2, ['FROMNUMBER', 'TONUMBER'])
+        l_chr_err, l_chrs = psspy.abrnchar(-1, 0, 0, 2, ['ID'])
+        l_real_err, l_flw = psspy.abrnreal(-1, 0, 0, 2, ['P', 'Q'])
+        if l_int_err == 0:
+             for frm, to, ckt, p, q in zip(l_ints[0], l_ints[1], l_chrs[0], l_flw[0], l_flw[1]):
+                line_results.append([frm, to, ckt, p, q])
+    except:
+        print("Fallback failed.")
+
+# ==============================================================================
+# 5. SAVE TO EXCEL
+# ==============================================================================
+try:
+    with pd.ExcelWriter(load_flow_file) as writer:
+        if bus_results:
+            df_bus = pd.DataFrame(bus_results, columns=['Bus Number', 'Voltage (pu)', 'Angle (deg)'])
+            df_bus.to_excel(writer, sheet_name='Bus Data', index=False)
+        
+        if line_results:
+            df_line = pd.DataFrame(line_results, columns=['From Bus', 'To Bus', 'ID', 'P (MW)', 'Q (MVar)'])
+            df_line.to_excel(writer, sheet_name='Line Flows', index=False)
+
+    print(f"SUCCESS: Results saved to {load_flow_file}")
+
+except Exception as e:
+    print(f"CRITICAL ERROR: Could not save Excel file. Is it open? \nDetails: {e}")
+
+print("--- Script Finished ---")
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+Ymatrix1
+
+import psse3603
+import psspy
+import os
+import re
+import numpy as np
+import scipy.io as sio
+
+# ==============================================================================
+# 1. SETUP
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+txt_file = os.path.join(work_dir, "Ybus_Export.txt")
+mat_file = os.path.join(work_dir, "Ybus_Export.mat")
+
+psspy.psseinit(50)
+psspy.read(0, raw_file)
+
+# ==============================================================================
+# 2. POWER FLOW
+# ==============================================================================
+print("Solving Power Flow...")
+ierr = psspy.fnsl([0,0,0,1,1,0,99,0])
+print(f"fnsl returned {ierr}")
+
+# ==============================================================================
+# 3. CONVERT
+# ==============================================================================
+print("Converting Generators...")
+psspy.cong(0)
+
+print("Converting Loads...")
+psspy.conl(0,1,1,[0,0],[100,0,0,100])
+psspy.conl(0,1,2,[0,0],[100,0,0,100])
+psspy.conl(0,1,3,[0,0],[100,0,0,100])
+
+psspy.ordr(0)
+psspy.fact()
+psspy.tysl(0)
+
+# ==============================================================================
+# 4. EXPORT Y-BUS AS TEXT
+# ==============================================================================
+print("Exporting Y-Bus...")
+ierr_out = psspy.output_y_matrix(0,1,0,0,txt_file)
+print(f"output_y_matrix returned {ierr_out}")
+
+if ierr_out != 0:
+    print("Error exporting Y-bus.")
+    exit()
+
+# ==============================================================================
+# 5. PARSE THE TEXT FILE AND BUILD Y-BUS MATRIX
+# ==============================================================================
+print("Converting text file → numeric Y-bus...")
+
+Yreal = {}
+Yimag = {}
+max_bus = 0
+
+with open(txt_file, "r") as f:
+    for line in f:
+        parts = re.findall(r"[-+]?\d*\.\d+|\d+", line)
+        if len(parts) == 4:
+            i = int(parts[0])
+            j = int(parts[1])
+            real = float(parts[2])
+            imag = float(parts[3])
+
+            max_bus = max(max_bus, i, j)
+
+            Yreal[(i, j)] = real
+            Yimag[(i, j)] = imag
+
+# Build matrix
+Y = np.zeros((max_bus, max_bus), dtype=complex)
+for (i, j), val in Yreal.items():
+    Y[i-1, j-1] = val + 1j * Yimag[(i, j)]
+
+# ==============================================================================
+# 6. SAVE TO .MAT FILE
+# ==============================================================================
+print("Saving Y-bus to MATLAB format...")
+
+sio.savemat(mat_file, {"Ybus": Y})
+
+print(f"SUCCESS: Ybus.mat created at:\n   {mat_file}")
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------
+
+KRONS REDUCTION
+
+import psse3603
+import psspy
+import os
+import re
+import numpy as np
+import scipy.io as sio
+
+# ==============================================================================
+# 1. SETUP & CONFIGURATION
+# ==============================================================================
+work_dir = r"C:\Users\Acer\Desktop\final year project\energy function\My_Work\WSCC programs"
+raw_file = os.path.join(work_dir, "IEEE9bus.raw")
+txt_file = os.path.join(work_dir, "Ybus_Export.txt")
+mat_file = os.path.join(work_dir, "Ybus_Export.mat")
+
+if not os.path.exists(raw_file):
+    print(f"Error: Raw file not found at {raw_file}")
+    exit()
+
+psspy.psseinit(50)
+psspy.read(0, raw_file)
+
+# ==============================================================================
+# 2. POWER FLOW & CONVERSION
+# ==============================================================================
+print("Solving Power Flow...")
+psspy.fnsl([0,0,0,1,1,0,99,0])
+
+print("Converting Network...")
+psspy.cong(0)
+psspy.conl(0,1,1,[0,0],[100,0,0,100])
+psspy.ordr(0)
+psspy.fact()
+psspy.tysl(0)
+
+# ==============================================================================
+# 3. EXPORT & PARSE Y-BUS
+# ==============================================================================
+print("Exporting & Parsing Y-Bus...")
+psspy.output_y_matrix(0,1,0,0,txt_file)
+
+Yreal = {}
+Yimag = {}
+max_bus = 0
+
+with open(txt_file, "r") as f:
+    for line in f:
+        parts = re.findall(r"[-+]?\d*\.\d+|\d+", line)
+        if len(parts) >= 4:
+            try:
+                i, j = int(parts[0]), int(parts[1])
+                real, imag = float(parts[2]), float(parts[3])
+                max_bus = max(max_bus, i, j)
+                Yreal[(i, j)] = real
+                Yimag[(i, j)] = imag
+            except ValueError:
+                continue
+
+Y = np.zeros((max_bus, max_bus), dtype=complex)
+for (i, j), val in Yreal.items():
+    Y[i-1, j-1] = val + 1j * Yimag[(i, j)]
+    Y[j-1, i-1] = val + 1j * Yimag[(i, j)]
+
+# ==============================================================================
+# 4. PRE-FAULT CALCULATION (Your Original Logic)
+# ==============================================================================
+print("\n--- PRE-FAULT CALCULATION ---")
+# ybar hardcoded
+ybar = np.diag([0-16.45j, 0-8.35j, 0-5.52j])
+
+# load_ybar hardcoded
+load_ybar = np.zeros((9, 9), dtype=complex)
+load_ybar[4, 4] = 1.26  - 0.504j
+load_ybar[5, 5] = 0.877 - 0.292j
+load_ybar[7, 7] = 0.969 - 0.339j
+
+# Overwrite diagonals
+Y[4, 4] = 2.553 - 17.338j
+Y[5, 5] = 3.224 - 15.841j
+Y[7, 7] = 2.772 - 23.303j
+
+YN = Y.copy()
+
+# Add ybar to top-left 3x3
+YNadd = np.zeros((9, 9), dtype=complex)
+YNadd[0:3, 0:3] = ybar
+YN1 = YN + YNadd
+YN2 = YN1 + load_ybar  # This is the full physical matrix YD
+
+# Construct Augmented Matrix (12x12) for Pre-Fault
+Y_aug = np.zeros((12, 12), dtype=complex)
+Y_aug[0:3, 0:3] = ybar
+Y_aug[0:3, 3:6] = -ybar
+Y_aug[3:6, 0:3] = -ybar
+Y_aug[3:12, 3:12] = YN2
+
+# Kron Reduction Pre-Fault
+YA = ybar
+YD = YN2
+YB = np.zeros((3, 9), dtype=complex); YB[0:3, 0:3] = -ybar
+YC = np.zeros((9, 3), dtype=complex); YC[0:3, 0:3] = -ybar
+
+YDC = np.linalg.solve(YD, YC)
+Yint = YA - np.dot(YB, YDC)
+print(" > Yint (Pre-Fault) Calculated.")
+
+# ==============================================================================
+# 5. FAULTED CALCULATION (Added Logic)
+# ==============================================================================
+print("\n--- FAULTED CALCULATION (Bus 7 Grounded) ---")
+# Logic: Remove Bus 7 from the physical matrix.
+# Bus 7 is Index 6 in Python (0-based)
+
+# 1. Create Faulted Physical Matrix (YDF)
+# Start with Pre-Fault Physical Matrix
+YDF = YN2.copy() 
+
+# Remove Row 6 (Bus 7) and Col 6 (Bus 7)
+YDF = np.delete(YDF, 6, axis=0) # Remove Row
+YDF = np.delete(YDF, 6, axis=1) # Remove Col
+# YDF is now 8x8
+
+# 2. Adjust Coupling Matrices YBF and YCF
+# YBF was 3x9, now needs to be 3x8
+YBF = YB.copy()
+YBF = np.delete(YBF, 6, axis=1) # Remove Col 6 corresponding to Bus 7
+
+# YCF was 9x3, now needs to be 8x3
+YCF = YC.copy()
+YCF = np.delete(YCF, 6, axis=0) # Remove Row 6 corresponding to Bus 7
+
+# 3. YAF remains ybar
+YAF = ybar
+
+# 4. Perform Reduction
+try:
+    YDCF = np.linalg.solve(YDF, YCF)
+    YintF = YAF - np.dot(YBF, YDCF)
+    print(" > YintF (Faulted) Calculated.")
+except np.linalg.LinAlgError:
+    print("Error: YDF singular during fault.")
+    YintF = np.zeros((3,3))
+
+# ==============================================================================
+# 6. POST-FAULT CALCULATION (Added Logic)
+# ==============================================================================
+print("\n--- POST-FAULT CALCULATION (Line 5-7 Removed) ---")
+# Logic: Modify YN2 to remove Line 5-7 connection and diagonals.
+# Line Y = 1.187 - 5.975i (Hardcoded from your request)
+
+Y_line = 1.187 - 5.975j
+
+# Create Post-Fault Physical Matrix
+YN2PF = YN2.copy()
+
+# Python Indices: Bus 5 -> 4, Bus 7 -> 6
+idx5 = 4
+idx7 = 6
+
+# Remove line from diagonals (Subtract admittance)
+YN2PF[idx5, idx5] = YN2PF[idx5, idx5] - Y_line
+YN2PF[idx7, idx7] = YN2PF[idx7, idx7] - Y_line
+
+# Remove line from off-diagonals (Set to 0)
+# Note: In Y-bus, off-diagonal Yij = -y_line. Removing it means setting to 0.
+# (If the original matrix had multiple lines 5-7, we would add Y_line, 
+#  but here we explicitly zero it out assuming single line trip).
+YN2PF[idx5, idx7] = 0.0 + 0.0j
+YN2PF[idx7, idx5] = 0.0 + 0.0j
+
+# Setup Kron Matrices
+YDPF = YN2PF
+YAPF = ybar
+YBPF = YB # 3x9 (Full size again, as Bus 7 exists, just disconnected from 5)
+YCPF = YC # 9x3
+
+# Perform Reduction
+try:
+    YDCPF = np.linalg.solve(YDPF, YCPF)
+    YintPF = YAPF - np.dot(YBPF, YDCPF)
+    print(" > YintPF (Post-Fault) Calculated.")
+except np.linalg.LinAlgError:
+    print("Error: YDPF singular during post-fault.")
+    YintPF = np.zeros((3,3))
+
+# ==============================================================================
+# 7. SAVE ALL MATRICES
+# ==============================================================================
+print(f"\nSaving all matrices to {mat_file}...")
+
+data_to_save = {
+    "Ybus": Y,        # Base
+    "Y_aug": Y_aug,   # Augmented Pre-Fault
+    "Yint": Yint,     # Reduced Pre-Fault
+    "YintF": YintF,   # Reduced Faulted
+    "YintPF": YintPF  # Reduced Post-Fault
+}
+
+sio.savemat(mat_file, data_to_save)
+print("SUCCESS: File saved.")
+
+

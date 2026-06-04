@@ -1,0 +1,10 @@
+# File:"C:\Users\DELL\Desktop\NRPG_shed1_plot.py", generated on TUE, DEC 29 2015  17:44, release 33.05.02
+pssplot.newplotbook()
+pssplot.insertpage()
+pssplot.setselectedpage(0)
+pssplot.openchandatafile(r"""C:\Users\DELL\Desktop\NRPG.out""")
+pssplot.dragdropplotdata(r"""NRPG""",r"""30 - ANGL    21[KOTA2       220.00]2""")
+pssplot.dragdropplotdata(r"""NRPG""",r"""31 - ANGL    22[SRTGR2      220.00]1""")
+pssplot.dragdropplotdata(r"""NRPG""",r"""32 - ANGL    22[SRTGR2      220.00]2""")
+pssplot.dragdropplotdata(r"""NRPG""",r"""33 - ANGL    23[SRTGRHG     220.00]1""")
+pssplot.dragdropplotdata(r"""NRPG""",r"""34 - ANGL    24[NAPP2       220.00]1""")

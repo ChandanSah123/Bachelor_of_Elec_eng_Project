@@ -1,0 +1,13 @@
+# File:"C:\Users\Acer\Desktop\IEEE14 Bus\ieee14.py", generated on SUN, JAN 11 2026  12:01, PSS(R)E Xplore release 36.03.01
+psspy.chsb(0,1,[-1,-1,-1,1,1,0])
+psspy.chsb(0,1,[-1,-1,-1,1,2,0])
+psspy.chsb(0,1,[-1,-1,-1,1,6,0])
+psspy.chsb(0,1,[-1,-1,-1,1,7,0])
+psspy.chsb(0,1,[-1,-1,-1,1,16,0])
+psspy.strt_2([0,0],r"""C:\Users\Acer\Desktop\IEEE14 Bus\ieee14.out""")
+psspy.run(0,1.0,0,1,1)
+psspy.dist_branch_fault(4,5,r"""1""",1,69.0,[0.0,-0.2E+10])
+psspy.run(0,1.2,0,1,1)
+psspy.dist_branch_trip(4,5,r"""1""")
+psspy.dist_clear_fault(1)
+psspy.run(0,6.0,0,1,1)

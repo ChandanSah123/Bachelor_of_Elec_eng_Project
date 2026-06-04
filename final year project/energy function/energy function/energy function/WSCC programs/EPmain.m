@@ -1,0 +1,27 @@
+clc;
+% clear all;
+% warning('off');
+H=[23.64 6.4 3.01];
+E=[1.0728 1.0775 1.0609];
+g=3; %no of generators
+Pm=[0.7195 1.63 0.85];
+C=zeros(g,g);
+D=zeros(g,g);
+for i=1:g
+   for j=1:3
+        C(i,j)=E(i)*E(j)*imag(Y1(i,j));
+        D(i,j)=E(i)*E(j)*real(Y1(i,j)); 
+   end
+end
+x0=[-0.8294    2.1211    2.0037];
+A=[];
+b=[];
+Aeq=[];
+beq=[];
+lb=-pi*ones(1,3);
+ub=pi*ones(1,3);
+opts = optimset('Algorithm','interior-point');
+% opts = optimset('Display','iter','Algorithm','sqp');
+[x,fval,exitflag,~,lambda]=fmincon(@(x) 1,x0,A,b,Aeq,beq,lb,ub,@(x) nlc(x,Pm,E,C,D,H,Y1),opts);
+x=x-((x(1)*H(1)+x(2)*H(2)+x(3)*H(3))/sum(H))*ones(1,3)
+x0
