@@ -1,2 +1,0 @@
-Multi-input CNN based vibro-acoustic fusion for accurate fault diagnosis of induction motor
-https://www.sciencedirect.com/science/article/abs/pii/S0952197623000568
